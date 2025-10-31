@@ -5,6 +5,8 @@ from datetime import datetime
 from DIExtract07 import process_pdf          # ✅ your main extraction
 from insert_data import insert_delivery_instructions  # ✅ your DB insertion
 import os
+import json
+from y_data import get_connection
 
 # ==============================
 # CONFIGURATION
@@ -211,6 +213,67 @@ def get_matrix_table():
     finally:
         cursor.close()
         conn.close()
+
+@app.route("/manual_upload", methods=["POST"])
+def manual_upload():
+    try:
+        # ✅ Step 1: Read the common form data
+        factory = request.form.get("factory")
+        month_year = request.form.get("month_year")
+        bucket = request.form.get("bucket")
+        version = request.form.get("version")
+
+        # ✅ Step 2: Read JSON data from frontend
+        manual_data = json.loads(request.form.get("manual_data"))
+        quantities = json.loads(request.form.get("quantities"))
+
+        # ✅ Step 3: Connect to PostgreSQL
+        conn = get_connection()
+        cur = conn.cursor()
+
+        # ✅ Step 4: Insert header data into delivery_instruction
+        cur.execute("""
+            INSERT INTO delivery_instruction
+            (factory, month_year, bucket, version,
+             purchase_schedule, customer_name, customer_code,
+             customer_part_desc, customer_part_num, created_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+            RETURNING id;
+        """, (
+            factory, month_year, bucket, version,
+            manual_data["purchaseSchedule"],
+            manual_data["customerName"],
+            manual_data["customerCode"],
+            manual_data["partDesc"],
+            manual_data["partNumber"]
+        ))
+
+        di_id = cur.fetchone()[0]  # get inserted record ID
+
+        # ✅ Step 5: Insert quantities into delivery_quantity table
+        for q in quantities:
+            if not q["date"] or not q["qty"]:
+                continue
+            cur.execute("""
+                INSERT INTO delivery_quantity (di_id, date_commit, quantity)
+                VALUES (%s, %s, %s)
+            """, (di_id, q["date"], q["qty"]))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        # ✅ Step 6: Return success message
+        return jsonify({
+            "status": "success",
+            "header_id": di_id,
+            "inserted_rows": len(quantities),
+            "saved_to": "delivery_instruction + delivery_quantity"
+        })
+
+    except Exception as e:
+        print("❌ Error inserting manual data:", e)
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # ==============================
 # SERVER ENTRY POINT
