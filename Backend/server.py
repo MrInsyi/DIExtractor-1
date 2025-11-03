@@ -7,6 +7,7 @@ from insert_data import insert_delivery_instructions  # ✅ your DB insertion
 import os
 import json
 from y_data import get_connection
+from manual_insert import manual_data_insert
 
 # ==============================
 # CONFIGURATION
@@ -217,63 +218,46 @@ def get_matrix_table():
 @app.route("/manual_upload", methods=["POST"])
 def manual_upload():
     try:
-        # ✅ Step 1: Read the common form data
         factory = request.form.get("factory")
         month_year = request.form.get("month_year")
         bucket = request.form.get("bucket")
         version = request.form.get("version")
 
-        # ✅ Step 2: Read JSON data from frontend
-        manual_data = json.loads(request.form.get("manual_data"))
-        quantities = json.loads(request.form.get("quantities"))
+        manual_data = json.loads(request.form.get("manual_data") or "{}")
+        quantities = json.loads(request.form.get("quantities") or "[]")
 
-        # ✅ Step 3: Connect to PostgreSQL
-        conn = get_connection()
-        cur = conn.cursor()
+        print("📦 Received manual upload:")
+        print("Factory:", factory)
+        print("Month-Year:", month_year)
+        print("Bucket:", bucket)
+        print("Version:", version)
+        print("Manual Data:", manual_data)
+        print("Quantities:", quantities)
 
-        # ✅ Step 4: Insert header data into delivery_instruction
-        cur.execute("""
-            INSERT INTO delivery_instruction
-            (factory, month_year, bucket, version,
-             purchase_schedule, customer_name, customer_code,
-             customer_part_desc, customer_part_num, created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
-            RETURNING id;
-        """, (
-            factory, month_year, bucket, version,
-            manual_data["purchaseSchedule"],
-            manual_data["customerName"],
-            manual_data["customerCode"],
-            manual_data["partDesc"],
-            manual_data["partNumber"]
-        ))
+        required_fields = ["customerName", "customerCode", "partNumber", "partDesc"]
+        missing = [f for f in required_fields if not manual_data.get(f)]
+        if missing:
+            return jsonify({
+                "status": "error",
+                "message": f"Missing required fields: {', '.join(missing)}"
+            }), 400
 
-        di_id = cur.fetchone()[0]  # get inserted record ID
+        # 🧠 Call your single-table insert/update logic
+        rows = manual_data_insert(version, manual_data, quantities)
 
-        # ✅ Step 5: Insert quantities into delivery_quantity table
-        for q in quantities:
-            if not q["date"] or not q["qty"]:
-                continue
-            cur.execute("""
-                INSERT INTO delivery_quantity (di_id, date_commit, quantity)
-                VALUES (%s, %s, %s)
-            """, (di_id, q["date"], q["qty"]))
-
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        # ✅ Step 6: Return success message
         return jsonify({
             "status": "success",
-            "header_id": di_id,
-            "inserted_rows": len(quantities),
-            "saved_to": "delivery_instruction + delivery_quantity"
+            "inserted_or_updated_rows": rows,
+            "saved_to": "delivery_instruction"
         })
 
     except Exception as e:
         print("❌ Error inserting manual data:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)
 
 # ==============================
 # SERVER ENTRY POINT
